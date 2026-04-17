@@ -1,0 +1,85 @@
+[Unit]
+Description=fuzzpot — Protocol Fuzzing Honeypot
+After=network.target
+Documentation=https://github.com/dozaibot/fuzzpot
+
+[Service]
+Type=simple
+User=fuzzpot
+Group=fuzzpot
+
+# ── Binary ──────────────────────────────────────────
+ExecStart=/opt/fuzzpot/fuzzpot --config /etc/fuzzpot/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# ── Systemd Sandbox ────────────────────────────────
+# ProtectSystem: read-only root filesystem
+ProtectSystem=strict
+
+# ProtectHome: can't access /home, /root, /run/user
+ProtectHome=true
+
+# ReadWritePaths: only the log directory
+ReadWritePaths=/var/log/fuzzpot
+
+# NoNewPrivileges: can't gain elevated permissions
+NoNewPrivileges=true
+
+# PrivateTmp: isolated /tmp
+PrivateTmp=true
+
+# PrivateDevices: no access to /dev (no disk devices, etc.)
+PrivateDevices=true
+
+# ProtectKernelTunables: can't modify /proc/sys, /sys
+ProtectKernelTunables=true
+
+# ProtectKernelModules: can't load kernel modules
+ProtectKernelModules=true
+
+# ProtectControlGroups: can't modify cgroups
+ProtectControlGroups=true
+
+# SystemCallFilter: block dangerous syscalls
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+# CapabilityBoundingSet: drop ALL capabilities
+CapabilityBoundingSet=
+
+# RestrictAddressFamilies: TCP only (no Unix sockets, no raw)
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# ── Resource Limits ────────────────────────────────
+# Memory: 128MB max (binary uses ~8MB at idle)
+MemoryMax=128M
+
+# Tasks (threads/goroutines): 8192 max
+# (~4000 listeners + ~4000 active connections + headroom)
+TasksMax=8192
+
+# File descriptors: 16384
+LimitNOFILE=16384
+
+# CPU: max 50% of a core (low priority — don't starve real services)
+CPUQuota=50%
+
+# Nice level: run at low priority
+Nice=10
+
+# ── Logging ─────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fuzzpot
+
+# ── Hardening ───────────────────────────────────────
+# RemoveIPC: clean up IPC objects on stop
+RemoveIPC=true
+
+# LockPersonality: prevent personality() syscall tricks
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
