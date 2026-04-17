@@ -21,7 +21,7 @@ import (
 	"fuzzpot/portscan"
 )
 
-var version = "0.1.0"
+var version = "1.1.0"
 
 func main() {
 	cfgPath := flag.String("config", "config/config.yaml", "path to config file")
