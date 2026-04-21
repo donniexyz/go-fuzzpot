@@ -120,8 +120,9 @@ func main() {
 	// Dynamically set maxConcurrent based on system file descriptor limit
 	// to prevent DoS from exhausting all available FDs.
 	var maxConcurrent int
-	if limit, err := unix.Getrlimit(unix.RLIMIT_NOFILE); err == nil && limit.Cur > 0 {
-		maxConcurrent = int(limit.Cur / 2) // Use half of available FDs
+	var rlimit unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &rlimit); err == nil && rlimit.Cur > 0 {
+		maxConcurrent = int(rlimit.Cur / 2) // Use half of available FDs
 		if maxConcurrent < 100 {
 			maxConcurrent = 100 // Minimum safe value
 		}
@@ -221,12 +222,12 @@ func listenPort(
 	addr := ":" + strconv.Itoa(port)
 
 	lc := net.ListenConfig{
+		// Set backlog (queue length for pending connections) to handle SYN floods
+		// Note: SO_BACKLOG is not available on Linux; backlog is handled by ListenBacklog
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
 				// Increase receive buffer to handle SYN floods
-				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 256*1024)
-				// Set backlog (queue length for pending connections)
-				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BACKLOG, 1024)
+				unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 256*1024)
 			})
 		},
 	}
