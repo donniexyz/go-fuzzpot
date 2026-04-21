@@ -95,52 +95,52 @@ func (l *Logger) WriteRaw(line string) error {
 // rotate renames the current log and opens a fresh one.
 // Uses copy-then-truncate for cross-device atomicity.
 func (l *Logger) rotate() error {
-ts := time.Now().Format("20060102-150405")
-oldPath := fmt.Sprintf("%s.%s", l.logPath, ts)
+    ts := time.Now().Format("20060102-150405")
+    oldPath := fmt.Sprintf("%s.%s", l.logPath, ts)
 
-l.file.Close()
+    l.file.Close()
 
-// Cross-device safe rotation: copy then truncate
-if err := copyThenTruncate(l.logPath, oldPath); err != nil {
-// If copy fails, try simple rename as fallback
-os.Rename(l.logPath, oldPath)
-}
+    // Cross-device safe rotation: copy then truncate
+    if err := copyThenTruncate(l.logPath, oldPath); err != nil {
+        // If copy fails, try simple rename as fallback
+        os.Rename(l.logPath, oldPath)
+    }
 
-f, err := os.OpenFile(l.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
-if err != nil {
-return fmt.Errorf("reopen log after rotate: %w", err)
-}
-l.file = f
-l.written = 0
+    f, err := os.OpenFile(l.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+    if err != nil {
+        return fmt.Errorf("reopen log after rotate: %w", err)
+    }
+    l.file = f
+    l.written = 0
 
-// Prune old rotated files if we have a cap
-if l.maxFiles > 0 {
-l.pruneOldLogs()
-}
-return nil
+    // Prune old rotated files if we have a cap
+    if l.maxFiles > 0 {
+        l.pruneOldLogs()
+    }
+    return nil
 }
 
 // copyThenTruncate copies src to dst then truncates src to zero length.
 // This is atomic across filesystems unlike os.Rename.
 func copyThenTruncate(src, dst string) error {
-srcFile, err := os.Open(src)
-if err != nil {
-return err
-}
-defer srcFile.Close()
+    srcFile, err := os.Open(src)
+    if err != nil {
+        return err
+    }
+    defer srcFile.Close()
 
-dstFile, err := os.Create(dst)
-if err != nil {
-return err
-}
-defer dstFile.Close()
+    dstFile, err := os.Create(dst)
+    if err != nil {
+        return err
+    }
+    defer dstFile.Close()
 
-if _, err := io.Copy(dstFile, srcFile); err != nil {
-return err
-}
+    if _, err := io.Copy(dstFile, srcFile); err != nil {
+        return err
+    }
 
-// Truncate original instead of removing
-return os.Truncate(src, 0)
+    // Truncate original instead of removing
+    return os.Truncate(src, 0)
 }
 
 // pruneOldLogs removes the oldest rotated log files when maxFiles is exceeded.
