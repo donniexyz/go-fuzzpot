@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"fuzzpot/capture"
 	"fuzzpot/config"
 	"fuzzpot/logger"
@@ -46,6 +48,14 @@ func main() {
 		os.Exit(1)
 	}
 	defer log.Close()
+
+	// Setup security logger for incident response
+	secLog, err := logger.NewSecurityLogger(cfg.Logging.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "security logger init: %v\n", err)
+		os.Exit(1)
+	}
+	defer secLog.Close()
 
 	// Build port ranges from config
 	var ranges [][2]int
@@ -107,9 +117,20 @@ func main() {
 	}()
 
 	// Connection limiter — prevent goroutine explosion under flood.
-	// MaxConcurrent limits how many handleConnection goroutines run at once.
-	// Beyond this, Accept() still works but connections are immediately closed.
-	const maxConcurrent = 4096
+	// Dynamically set maxConcurrent based on system file descriptor limit
+	// to prevent DoS from exhausting all available FDs.
+	var maxConcurrent int
+	if limit, err := unix.Getrlimit(unix.RLIMIT_NOFILE); err == nil && limit.Cur > 0 {
+		maxConcurrent = int(limit.Cur / 2) // Use half of available FDs
+		if maxConcurrent < 100 {
+			maxConcurrent = 100 // Minimum safe value
+		}
+		if maxConcurrent > 4096 {
+			maxConcurrent = 4096 // Cap at reasonable default
+		}
+	} else {
+		maxConcurrent = 256 // Conservative default if we can't determine limit
+	}
 	connSem := make(chan struct{}, maxConcurrent)
 	// Stats
 	var stats struct {
@@ -141,7 +162,7 @@ func main() {
 			break
 		}
 		go func() {
-			err := listenPort(ctx, p, cfg, pm, log, &stats, connSem)
+			err := listenPort(ctx, p, cfg, pm, log, secLog, &stats, connSem)
 			if err != nil && ctx.Err() == nil {
 				stats.mu.Lock()
 				stats.errors++
@@ -170,6 +191,7 @@ func main() {
 		case <-ticker.C:
 			conflicts := pm.DetectConflicts()
 			if len(conflicts) > 0 {
+                                secLog.LogConflict(conflicts)
 				fmt.Printf("  [!] %d port conflicts detected (claimed by system): %v\n",
 					len(conflicts), conflicts)
 				// Note: closed listeners auto-recover on next restart.
@@ -186,6 +208,7 @@ func listenPort(
 	cfg *config.Config,
 	pm *portscan.PortManager,
 	log *logger.Logger,
+	secLog *logger.SecurityLogger,
 	stats *struct {
 		mu          sync.Mutex
 		connections int64
@@ -196,7 +219,18 @@ func listenPort(
 	connSem chan struct{},
 ) error {
 	addr := ":" + strconv.Itoa(port)
-	listener, err := net.Listen("tcp", addr)
+
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				// Increase receive buffer to handle SYN floods
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 256*1024)
+				// Set backlog (queue length for pending connections)
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BACKLOG, 1024)
+			})
+		},
+	}
+	listener, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("port %d: %w", port, err)
 	}
@@ -226,10 +260,12 @@ func listenPort(
 		// If at capacity, close immediately to prevent goroutine explosion.
 		select {
 		case connSem <- struct{}{}:
+			// Successfully acquired semaphore slot
 			go handleConnection(conn, port, cfg, log, stats, connSem)
 		default:
 			// At capacity — close immediately, log throttle event
-			atomic.AddInt64(&stats.throttled, 1)
+			secLog.LogThrottled(conn.RemoteAddr().String(), port)
+				atomic.AddInt64(&stats.throttled, 1)
 			conn.Close()
 		}
 	}
@@ -261,7 +297,7 @@ func handleConnection(conn net.Conn, port int, cfg *config.Config, log *logger.L
 			"dst_port":   port,
 			"proto":      event.Proto,
 			"size":       event.Size,
-			"printable":  event.Printable,
+			"printable":  sanitizeForLog(event.Printable),
 			"hex":        event.Hex,
 		}
 
@@ -338,6 +374,17 @@ func contains(slice []int, val int) bool {
 	return false
 }
 
+
+// sanitizeForLog escapes special characters in untrusted strings to prevent
+// JSON log injection attacks.
+func sanitizeForLog(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	return s
+}
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
