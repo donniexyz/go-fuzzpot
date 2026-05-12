@@ -4,6 +4,7 @@ import (
         "context"
         "flag"
         "fmt"
+        "log/slog"
         "net"
         "os"
         "os/signal"
@@ -27,17 +28,21 @@ import (
 // Using json.Marshal on a struct ensures proper escaping of all special
 // characters, preventing JSON log injection vulnerabilities.
 type LogEntry struct {
-        Timestamp string `json:"ts"`
-        SourceIP  string `json:"src_ip"`
-        SourcePort int   `json:"src_port"`
-        DestPort  int    `json:"dst_port"`
-        Proto     string `json:"proto"`
-        Size      int    `json:"size"`
-        Printable string `json:"printable"` // json.Marshal handles escaping
-        Hex       string `json:"hex"`
+        Timestamp     string `json:"ts"`
+        SourceIP      string `json:"src_ip"`
+        SourcePort    int    `json:"src_port"`
+        DestPort      int    `json:"dst_port"`
+        Proto         string `json:"proto"`
+        Size          int    `json:"size"`
+        Printable     string `json:"printable"`          // json.Marshal handles escaping
+        Hex           string `json:"hex"`
+        PayloadSHA256 string `json:"payload_sha256,omitempty"` // SHA256 hash for threat intel
 }
 
-var version = "1.1.0"
+var (
+        version    = "1.1.0"
+        slogLogger *slog.Logger // structured logger for operational events
+)
 
 func main() {
         cfgPath := flag.String("config", "config/config.yaml", "path to config file")
@@ -55,7 +60,13 @@ func main() {
                 os.Exit(1)
         }
 
-        // Setup logger (50MB per file, keep 10 rotated files = max ~500MB on disk)
+        // Initialize structured logger for operational events
+        slogLogger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+                Level:     slog.LevelInfo,
+                AddSource: false,
+        }))
+
+        // Setup file logger (50MB per file, keep 10 rotated files = max ~500MB on disk)
         log, err := logger.New(cfg.Logging.Dir, cfg.Logging.File, 50, 10)
         if err != nil {
                 fmt.Fprintf(os.Stderr, "logger init: %v\n", err)
@@ -70,6 +81,15 @@ func main() {
                 os.Exit(1)
         }
         defer secLog.Close()
+
+        // Log startup with structured fields
+        slogLogger.Info("fuzzpot_starting",
+                "version", version,
+                "config_path", *cfgPath,
+                "log_dir", cfg.Logging.Dir,
+                "read_timeout_sec", cfg.Capture.ReadTimeoutSec,
+                "refresh_interval_sec", cfg.Refresh.IntervalSec,
+        )
 
         // Build port ranges from config
         var ranges [][2]int
@@ -167,6 +187,13 @@ func main() {
                         stats.mu.Unlock()
                         fmt.Printf("  [stats] listening:%d  connections:%d  payloads:%d  errors:%d  throttled:%d\n",
                                 listening, conn, pay, errs, throt)
+                        slogLogger.Info("stats_tick",
+                                "listening_ports", listening,
+                                "connections_total", conn,
+                                "payloads_captured", pay,
+                                "errors_total", errs,
+                                "connections_throttled", throt,
+                        )
                 }
         }()
 
@@ -200,6 +227,12 @@ func main() {
                         stats.mu.Lock()
                         fmt.Printf("  [*] Final: connections=%d payloads=%d errors=%d throttled=%d\n",
                                 stats.connections, stats.payloads, stats.errors, stats.throttled)
+                        slogLogger.Info("fuzzpot_shutdown",
+                                "connections_total", stats.connections,
+                                "payloads_captured", stats.payloads,
+                                "errors_total", stats.errors,
+                                "connections_throttled", stats.throttled,
+                        )
                         stats.mu.Unlock()
                         fmt.Println("  [*] Done.")
                         return
@@ -209,6 +242,10 @@ func main() {
                                 secLog.LogConflict(conflicts)
                                 fmt.Printf("  [!] %d port conflicts detected (claimed by system): %v\n",
                                         len(conflicts), conflicts)
+                                slogLogger.Warn("port_conflicts_detected",
+                                        "conflict_count", len(conflicts),
+                                        "conflict_ports", conflicts,
+                                )
                                 // Note: closed listeners auto-recover on next restart.
                                 // For runtime recovery, we'd need a listener registry — 
                                 // kept simple here since conflicts are rare.
@@ -247,6 +284,11 @@ func listenPort(
         }
         listener, err := lc.Listen(ctx, "tcp", addr)
         if err != nil {
+                slogLogger.Error("listener_failed",
+                        "port", port,
+                        "error", err.Error(),
+                        "action", "skip_port",
+                )
                 return fmt.Errorf("port %d: %w", port, err)
         }
         defer listener.Close()
@@ -306,18 +348,24 @@ func handleConnection(conn net.Conn, port int, cfg *config.Config, log *logger.L
 
                 // Proper JSON serialization - no manual escaping needed
                 logEntry := LogEntry{
-                        Timestamp:  event.Timestamp.UTC().Format(time.RFC3339),
-                        SourceIP:   event.SourceIP,
-                        SourcePort: event.SourcePort,
-                        DestPort:   port,
-                        Proto:      event.Proto,
-                        Size:       event.Size,
-                        Printable:  event.Printable, // json.Marshal will escape correctly
-                        Hex:        event.Hex,
+                        Timestamp:     event.Timestamp.UTC().Format(time.RFC3339),
+                        SourceIP:      event.SourceIP,
+                        SourcePort:    event.SourcePort,
+                        DestPort:      port,
+                        Proto:         event.Proto,
+                        Size:          event.Size,
+                        Printable:     event.Printable, // json.Marshal will escape correctly
+                        Hex:           event.Hex,
+                        PayloadSHA256: event.PayloadSHA256,
                 }
 
                 if err := log.WriteEventTyped(logEntry); err != nil {
                         fmt.Fprintf(os.Stderr, "  [!] log write error: %v\n", err)
+                        slogLogger.Error("log_write_failed",
+                                "error", err.Error(),
+                                "src_ip", event.SourceIP,
+                                "dst_port", port,
+                        )
                         stats.mu.Lock()
                         stats.errors++
                         stats.mu.Unlock()

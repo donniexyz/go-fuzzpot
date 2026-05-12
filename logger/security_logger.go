@@ -4,6 +4,24 @@ import (
 	"time"
 )
 
+// SecurityEventType enumerates the kinds of security-relevant events.
+type SecurityEventType string
+
+const (
+	EventThrottled      SecurityEventType = "connection_throttled"
+	EventConflictDetect SecurityEventType = "conflict_detected"
+)
+
+// SecurityEvent is a typed struct for security log serialization.
+// Using json.Marshal on a struct ensures proper escaping and consistent field names.
+type SecurityEvent struct {
+	EventType  SecurityEventType `json:"event_type"`
+	Timestamp  string            `json:"ts"`
+	RemoteAddr string            `json:"remote_addr,omitempty"`
+	Port       int               `json:"port,omitempty"`
+	Ports      []int             `json:"ports,omitempty"`
+}
+
 // SecurityLogger wraps Logger for security-relevant events.
 // It writes to a separate security.log file for easier incident response monitoring.
 type SecurityLogger struct {
@@ -22,21 +40,21 @@ func NewSecurityLogger(dir string) (*SecurityLogger, error) {
 
 // LogThrottled logs a connection throttling event when the connection limit is reached.
 func (sl *SecurityLogger) LogThrottled(remoteAddr string, port int) {
-	event := map[string]interface{}{
-		"event_type":  "connection_throttled",
-		"ts":          time.Now().UTC().Format(time.RFC3339),
-		"remote_addr": remoteAddr,
-		"port":        port,
+	event := SecurityEvent{
+		EventType:  EventThrottled,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		RemoteAddr: remoteAddr,
+		Port:       port,
 	}
-	sl.WriteEvent(event)
+	sl.WriteEventTyped(event)
 }
 
 // LogConflict logs a port conflict detection event.
 func (sl *SecurityLogger) LogConflict(ports []int) {
-	event := map[string]interface{}{
-		"event_type": "conflict_detected",
-		"ts":         time.Now().UTC().Format(time.RFC3339),
-		"ports":      ports,
+	event := SecurityEvent{
+		EventType: EventConflictDetect,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Ports:     ports,
 	}
-	sl.WriteEvent(event)
+	sl.WriteEventTyped(event)
 }
