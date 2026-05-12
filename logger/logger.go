@@ -1,95 +1,119 @@
 package logger
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"sort"
-	"sync"
-	"time"
+        "encoding/json"
+        "fmt"
+        "io"
+        "os"
+        "path/filepath"
+        "sort"
+        "sync"
+        "time"
 )
 
 // Logger handles writing captured events to disk with size-based rotation
 // and a cap on total disk usage (old logs are pruned).
 type Logger struct {
-	mu       sync.Mutex
-	file     *os.File
-	logPath  string
-	logDir   string
-	rotSize  int64 // rotate after this many bytes per file
-	maxFiles int   // keep at most this many rotated files
-	written  int64
+        mu       sync.Mutex
+        file     *os.File
+        logPath  string
+        logDir   string
+        rotSize  int64 // rotate after this many bytes per file
+        maxFiles int   // keep at most this many rotated files
+        written  int64
 }
 
 // New creates a Logger, creating the log directory if needed.
 // rotSizeMB: rotate individual log file after this many MB.
 // maxFiles: keep at most this many rotated log files (0 = unlimited).
 func New(dir, filename string, rotSizeMB int, maxFiles ...int) (*Logger, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create log dir %s: %w", dir, err)
-	}
+        if err := os.MkdirAll(dir, 0755); err != nil {
+                return nil, fmt.Errorf("create log dir %s: %w", dir, err)
+        }
 
-	path := dir + "/" + filename
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
-	if err != nil {
-		return nil, fmt.Errorf("open log file %s: %w", path, err)
-	}
+        path := dir + "/" + filename
+        f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+        if err != nil {
+                return nil, fmt.Errorf("open log file %s: %w", path, err)
+        }
 
-	info, _ := f.Stat()
+        info, _ := f.Stat()
 
-	mf := 10 // default: keep 10 rotated files (~500MB at 50MB each)
-	if len(maxFiles) > 0 && maxFiles[0] > 0 {
-		mf = maxFiles[0]
-	}
+        mf := 10 // default: keep 10 rotated files (~500MB at 50MB each)
+        if len(maxFiles) > 0 && maxFiles[0] > 0 {
+                mf = maxFiles[0]
+        }
 
-	return &Logger{
-		file:     f,
-		logPath:  path,
-		logDir:   dir,
-		rotSize:  int64(rotSizeMB) * 1024 * 1024,
-		maxFiles: mf,
-		written:  info.Size(),
-	}, nil
+        return &Logger{
+                file:     f,
+                logPath:  path,
+                logDir:   dir,
+                rotSize:  int64(rotSizeMB) * 1024 * 1024,
+                maxFiles: mf,
+                written:  info.Size(),
+        }, nil
 }
 
 // WriteEvent appends a JSON-line event to the log file.
 func (l *Logger) WriteEvent(event map[string]interface{}) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+        l.mu.Lock()
+        defer l.mu.Unlock()
 
-	if l.rotSize > 0 && l.written >= l.rotSize {
-		if err := l.rotate(); err != nil {
-			return err
-		}
-	}
+        if l.rotSize > 0 && l.written >= l.rotSize {
+                if err := l.rotate(); err != nil {
+                        return err
+                }
+        }
 
-	line, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	line = append(line, '\n')
+        line, err := json.Marshal(event)
+        if err != nil {
+                return err
+        }
+        line = append(line, '\n')
 
-	n, err := l.file.Write(line)
-	l.written += int64(n)
-	return err
+        n, err := l.file.Write(line)
+        l.written += int64(n)
+        return err
+}
+
+// WriteEventTyped appends a JSON-line event to the log file using a typed struct.
+// This is preferred over WriteEvent as json.Marshal on structs guarantees proper
+// escaping of all special characters, preventing JSON log injection.
+func (l *Logger) WriteEventTyped(event interface{}) error {
+        l.mu.Lock()
+        defer l.mu.Unlock()
+
+        if l.rotSize > 0 && l.written >= l.rotSize {
+                if err := l.rotate(); err != nil {
+                        return err
+                }
+        }
+
+        line, err := json.Marshal(event)
+        if err != nil {
+                return fmt.Errorf("marshal event: %w", err)
+        }
+        line = append(line, '\n')
+
+        n, err := l.file.Write(line)
+        l.written += int64(n)
+        return err
 }
 
 // WriteRaw writes a raw string line to the log.
 func (l *Logger) WriteRaw(line string) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+        l.mu.Lock()
+        defer l.mu.Unlock()
 
-	if l.rotSize > 0 && l.written >= l.rotSize {
-		if err := l.rotate(); err != nil {
-			return err
-		}
-	}
+        if l.rotSize > 0 && l.written >= l.rotSize {
+                if err := l.rotate(); err != nil {
+                        return err
+                }
+        }
 
-	n, err := l.file.WriteString(line + "\n")
-	l.written += int64(n)
-	return err
+        n, err := l.file.WriteString(line + "\n")
+        l.written += int64(n)
+        return err
 }
 
 // rotate renames the current log and opens a fresh one.
@@ -145,40 +169,40 @@ func copyThenTruncate(src, dst string) error {
 
 // pruneOldLogs removes the oldest rotated log files when maxFiles is exceeded.
 func (l *Logger) pruneOldLogs() {
-	pattern := l.logPath + ".*"
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return
-	}
-	if len(matches) <= l.maxFiles {
-		return
-	}
+        pattern := l.logPath + ".*"
+        matches, err := filepath.Glob(pattern)
+        if err != nil {
+                return
+        }
+        if len(matches) <= l.maxFiles {
+                return
+        }
 
-	// Sort by modification time (oldest first)
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Stat(matches[i])
-		fj, _ := os.Stat(matches[j])
-		if fi == nil || fj == nil {
-			return false
-		}
-		return fi.ModTime().Before(fj.ModTime())
-	})
+        // Sort by modification time (oldest first)
+        sort.Slice(matches, func(i, j int) bool {
+                fi, _ := os.Stat(matches[i])
+                fj, _ := os.Stat(matches[j])
+                if fi == nil || fj == nil {
+                        return false
+                }
+                return fi.ModTime().Before(fj.ModTime())
+        })
 
-	// Remove oldest files to get back under the cap
-	toRemove := len(matches) - l.maxFiles
-	for i := 0; i < toRemove; i++ {
-		os.Remove(matches[i])
-	}
+        // Remove oldest files to get back under the cap
+        toRemove := len(matches) - l.maxFiles
+        for i := 0; i < toRemove; i++ {
+                os.Remove(matches[i])
+        }
 }
 
 // Close flushes and closes the log file.
 func (l *Logger) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.file.Close()
+        l.mu.Lock()
+        defer l.mu.Unlock()
+        return l.file.Close()
 }
 
 // Path returns the current log file path.
 func (l *Logger) Path() string {
-	return l.logPath
+        return l.logPath
 }
